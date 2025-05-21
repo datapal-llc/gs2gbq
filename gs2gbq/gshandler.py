@@ -44,7 +44,7 @@ class GSHandler:
     def read_data(self, starting_row: str=2):
         def _helper(column):
             column = column.strip()
-            for c in ["/", " ", ":", ";", "-", "!", "?", "\\"]:
+            for c in ["/", " ", ":", ";", "-", "!", "?", "\\", "(", ")", "$", "^", "&", "*", "+", "#", "%", ".","'", "`", "~", "="]:
                 column = column.replace(c, "_")
             return column
 
@@ -57,6 +57,7 @@ class GSHandler:
                 range = f"{range}:{range}"
             # data = get_worksheet_data(sh, self.sheet_name, range)         
             data = sh.worksheet(f"{self.sheet_name}").get(range)  
+            # data = sh.worksheet(f"{self.sheet_name}").get(range, value_render_option='UNFORMATTED_VALUE')
             df = pd.concat([df, pd.DataFrame(data)], axis=1)
         
         headers = df.iloc[0]
@@ -76,7 +77,7 @@ class GSHandler:
     @utils.timing_decorator
     @utils.log_execution
     @backoff.on_exception(backoff.expo, google.api_core.exceptions.GoogleAPICallError, max_tries=8, on_backoff=utils.backoff_hdlr, logger="logger")
-    def push_data_to_big_query(self, sheet_df, table_name):
+    def push_data_to_big_query(self, sheet_df, table_name, schema=None):
         credentials = service_account.Credentials.from_service_account_file(
             self.credential_file,
             scopes=["https://www.googleapis.com/auth/cloud-platform"],
@@ -85,7 +86,13 @@ class GSHandler:
         client = bigquery.Client(
             credentials=credentials, project=credentials.project_id
         )
-        job_config = bigquery.LoadJobConfig()
+        # job_config = bigquery.LoadJobConfig()
+        job_config = bigquery.LoadJobConfig(
+            # Specify a (partial) schema. All columns are always written to the
+            # table. The schema is used to assist in data type definitions.
+            schema=schema
+        )
+                
         job_config.autodetect = True
         job_config.schema_update_options = [
             bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION
@@ -96,12 +103,16 @@ class GSHandler:
             client.delete_table(f"{credentials.project_id}.{table_name}")
         except Exception as e:
             # Silently delete table if exist
-            pass
+            pass        
 
-        load_job = client.load_table_from_dataframe(
-            sheet_df, table_name, job_config=job_config
-        )
-        logging.info(f"Starting job {load_job.job_id} to ingest {self.url}")
-        load_job.result()
+        start =  0
+        offset = 1000
+        while start < sheet_df.shape[0]:
+            load_job = client.load_table_from_dataframe(
+                sheet_df.iloc[start:start+offset,:], table_name, job_config=job_config
+            )        
+            load_job.result()
+            start = start + offset
+            time.sleep(5)
         logging.info("Job finished.")
 
